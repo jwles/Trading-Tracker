@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Trading Tracker">
+    <title>Trading Tracker Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        body { 
+            -webkit-user-select: none;
+            -webkit-touch-callout: none;
+            overscroll-behavior: none;
+        }
+        * { box-sizing: border-box; }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white min-h-screen">
+    <div id="app" class="p-4 max-w-7xl mx-auto pb-20"></div>
+
+    <script>
+        const storage = {
+            save: (key, data) => localStorage.setItem(key, JSON.stringify(data)),
+            load: (key) => {
+                const data = localStorage.getItem(key);
+                return data ? JSON.parse(data) : null;
+            },
+            delete: (key) => localStorage.removeItem(key)
+        };
+
+        let state = {
+            trades: storage.load('trades') || [],
+            capital: storage.load('capital') || 10000,
+            tab: 'dashboard',
+            showForm: false,
+            showSettings: false,
+            quarter: 'all'
+        };
+
+        function getQuarter(date) {
+            const d = new Date(date);
+            return `Q${Math.floor(d.getMonth() / 3) + 1} ${d.getFullYear()}`;
+        }
+
+        function getMetrics() {
+            if (state.trades.length === 0) return null;
+            
+            const filtered = state.quarter === 'all' 
+                ? state.trades 
+                : state.trades.filter(t => getQuarter(t.date) === state.quarter);
+
+            let cap = state.capital;
+            const evolution = [{ date: 'Début', capital: cap }];
+
+            state.trades.forEach(t => {
+                cap += t.resultat;
+                evolution.push({
+                    date: new Date(t.date).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }),
+                    capital: cap
+                });
+            });
+
+            const total = filtered.length;
+            const wins = filtered.filter(t => t.resultat > 0);
+            const losses = filtered.filter(t => t.resultat < 0);
+            const pnl = filtered.reduce((s, t) => s + t.resultat, 0);
+            const pnlAll = state.trades.reduce((s, t) => s + t.resultat, 0);
+            const winRate = total > 0 ? (wins.length / total) * 100 : 0;
+            const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + t.resultat, 0) / wins.length : 0;
+            const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((s, t) => s + t.resultat, 0) / losses.length) : 0;
+            const profitFactor = avgLoss > 0 ? avgWin / avgLoss : 0;
+            const largestWin = wins.length > 0 ? Math.max(...wins.map(t => t.resultat)) : 0;
+            const largestLoss = losses.length > 0 ? Math.min(...losses.map(t => t.resultat)) : 0;
+
+            const byActif = {};
+            filtered.forEach(t => {
+                if (!byActif[t.actif]) byActif[t.actif] = { n: 0, pnl: 0, wins: 0, losses: 0 };
+                byActif[t.actif].n++;
+                byActif[t.actif].pnl += t.resultat;
+                if (t.resultat > 0) byActif[t.actif].wins++;
+                else byActif[t.actif].losses++;
+            });
+
+            const bySession = {};
+            filtered.forEach(t => {
+                if (!bySession[t.session]) bySession[t.session] = { n: 0, pnl: 0, wins: 0, losses: 0 };
+                bySession[t.session].n++;
+                bySession[t.session].pnl += t.resultat;
+                if (t.resultat > 0) bySession[t.session].wins++;
+                else bySession[t.session].losses++;
+            });
+
+            const quarters = {};
+            state.trades.forEach(t => {
+                const q = getQuarter(t.date);
+                if (!quarters[q]) quarters[q] = { n: 0, pnl: 0, w: 0, l: 0, winRate: 0, avg: 0 };
+                quarters[q].n++;
+                quarters[q].pnl += t.resultat;
+                if (t.resultat > 0) quarters[q].w++;
+                else quarters[q].l++;
+            });
+
+            Object.keys(quarters).forEach(q => {
+                quarters[q].winRate = (quarters[q].w / quarters[q].n) * 100;
+                quarters[q].avg = quarters[q].pnl / quarters[q].n;
+            });
+
+            return {
+                total,
+                wins: wins.length,
+                losses: losses.length,
+                pnl,
+                pnlAll,
+                winRate,
+                avgWin,
+                avgLoss,
+                profitFactor,
+                largestWin,
+                largestLoss,
+                cap,
+                evolution,
+                byActif,
+                bySession,
+                quarters,
+                quarterList: ['all', ...Object.keys(quarters).sort().reverse()]
+            };
+        }
+
+        function addTrade(data) {
+            const entry = parseFloat(data.entry);
+            const lot = parseFloat(data.lot);
+            const close = parseFloat(data.close);
+            const pips = (close - entry) * 10000;
+            const resultat = pips * lot * 10;
+
+            state.trades.push({
+                id: Date.now(),
+                date: data.date,
+                actif: data.actif.toUpperCase(),
+                session: data.session,
+                prixEntree: entry,
+                lot,
+                tp: data.tp ? parseFloat(data.tp) : null,
+                sl: data.sl ? parseFloat(data.sl) : null,
+                cloture: close,
+                resultat,
+                pips: pips.toFixed(1),
+                notes: data.notes || ''
+            });
+
+            state.trades.sort((a, b) => new Date(a.date) - new Date(b.date));
+            storage.save('trades', state.trades);
+            state.showForm = false;
+            render();
+        }
+
+        function deleteTrade(id) {
+            if (confirm('Supprimer ce trade ?')) {
+                state.trades = state.trades.filter(t => t.id !== id);
+                storage.save('trades', state.trades);
+                render();
+            }
+        }
+
+        function exportReport() {
+            const m = getMetrics();
+            if (!m) return;
+
+            const txt = `
+==============================================
+      RAPPORT DE TRADING PROFESSIONNEL
+==============================================
+Date du rapport: ${new Date().toLocaleDateString('fr-FR')}
+
+RÉSUMÉ GLOBAL
+Capital Initial: ${state.capital.toFixed(2)}€
+Capital Final: ${m.cap.toFixed(2)}€
+P&L Total: ${m.pnlAll >= 0 ? '+' : ''}${m.pnlAll.toFixed(2)}€
+ROI: ${((m.pnlAll / state.capital) * 100).toFixed(1)}%
+
+STATISTIQUES DE PERFORMANCE
+Total Trades: ${m.total}
+Trades Gagnants: ${m.wins}
+Trades Perdants: ${m.losses}
+Win Rate: ${m.winRate.toFixed(1)}%
+
+Gain Moyen: +${m.avgWin.toFixed(2)}€
+Perte Moyenne: -${m.avgLoss.toFixed(2)}€
+Plus Grand Gain: +${m.largestWin.toFixed(2)}€
+Plus Grande Perte: ${m.largestLoss.toFixed(2)}€
+
+MÉTRIQUES AVANCÉES
+Profit Factor: ${m.profitFactor.toFixed(2)}
+
+PERFORMANCE PAR ACTIF
+${Object.entries(m.byActif)
+    .sort(([,a], [,b]) => b.pnl - a.pnl)
+    .map(([actif, stats]) => 
+        `${actif}: ${stats.pnl >= 0 ? '+' : ''}${stats.pnl.toFixed(2)}€ (${stats.n} trades, ${stats.wins}W/${stats.losses}L)`
+    ).join('\n')}
+
+PERFORMANCE PAR SESSION
+${Object.entries(m.bySession)
+    .sort(([,a], [,b]) => b.pnl - a.pnl)
+    .map(([session, stats]) => 
+        `${session}: ${stats.pnl >= 0 ? '+' : ''}${stats.pnl.toFixed(2)}€ (${stats.n} trades, ${stats.wins}W/${stats.losses}L)`
+    ).join('\n')}
+
+ANALYSE TRIMESTRIELLE
+${Object.entries(m.quarters)
+    .sort((a, b) => b[0].localeCompare(a[0]))
+    .map(([q, s]) => 
+        `${q}: ${s.pnl >= 0 ? '+' : ''}${s.pnl.toFixed(2)}€ - ${s.n} trades - WR: ${s.winRate.toFixed(1)}%`
+    ).join('\n')}
+
+JOURNAL DES TRADES
+${state.trades.map(t => 
+    `${new Date(t.date).toLocaleDateString('fr-FR')} | ${t.actif} | ${t.session} | ${t.resultat >= 0 ? '+' : ''}${t.resultat.toFixed(2)}€ | ${t.pips} pips`
+).join('\n')}
+
+==============================================
+     Généré par Trading Tracker Pro
+==============================================
+`;
+
+            const blob = new Blob([txt], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `rapport-trading-${new Date().toISOString().split('T')[0]}.txt`;
+            a.click();
+            URL.revokeObjectURL(url);
+            alert('✅ Rapport exporté !');
+        }
+
+        function exportJSON() {
+            const data = {
+                capital: state.capital,
+                trades: state.trades,
+                exportDate: new Date().toISOString(),
+                version: '1.0'
+            };
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `trading-data-${new Date().toISOString().split('T')[0]}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+            alert('✅ Export JSON réussi !');
+        }
+
+        function importJSON(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    if (data.trades && Array.isArray(data.trades)) {
+                        state.trades = data.trades;
+                        if (data.capital) state.capital = data.capital;
+                        storage.save('trades', state.trades);
+                        storage.save('capital', state.capital);
+                        alert('✅ Import réussi !');
+                        render();
+                    }
+                } catch (error) {
+                    alert('❌ Erreur lors de l\'import');
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        function resetData() {
+            if (confirm('⚠️ ATTENTION : Supprimer TOUTES les données ? Cette action est irréversible !')) {
+                storage.delete('trades');
+                storage.delete('capital');
+                state.trades = [];
+                state.capital = 10000;
+                alert('✅ Données réinitialisées');
+                render();
+            }
+        }
+
+        function render() {
+            const m = getMetrics();
+            const app = document.getElementById('app');
+
+            app.innerHTML = `
+                <div class="mb-8">
+                    <div class="flex items-center justify-between flex-wrap gap-4 mb-4">
+                        <div>
+                            <h1 class="text-3xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
+                                Trading Tracker Pro
+                            </h1>
+                            <p class="text-slate-400 mt-1 text-sm">Sauvegarde automatique • Export PDF • Analyse trimestrielle</p>
+                        </div>
+                        <div class="flex gap-2">
+                            <button onclick="window.toggleSettings()" class="bg-slate-700 px-4 py-2 rounded-lg text-sm hover:bg-slate-600">
+                                ⚙️ Paramètres
+                            </button>
+                            ${m ? `
+                            <button onclick="window.exportReport()" class="bg-green-600 px-4 py-2 rounded-lg text-sm hover:bg-green-700">
+                                📄 Rapport
+                            </button>
+                            ` : ''}
+                            <button onclick="window.toggleForm()" class="bg-blue-600 px-4 py-2 rounded-lg text-sm hover:bg-blue-700">
+                                ${state.showForm ? '✖ Annuler' : '➕ Nouveau Trade'}
+                            </button>
+                        </div>
+                    </div>
+
+                    ${state.showSettings ? `
+                        <div class="bg-slate-800 rounded-xl p-6 mb-6 border border-slate-700">
+                            <h3 class="text-xl font-semibold mb-4">⚙️ Paramètres</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-2">Capital Initial</label>
+                                    <input type="number" id="capitalInput" value="${state.capital}" 
+                                        onchange="window.updateCapital(this.value)"
+                                        class="w-full bg-slate-700 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-2">Importer des données</label>
+                                    <input type="file" accept=".json" onchange="window.importJSON(event)"
+                                        class="w-full bg-slate-700 rounded-lg px-4 py-2 text-sm">
+                                </div>
+                                <button onclick="window.exportJSON()" 
+                                    class="bg-blue-600 px-4 py-3 rounded-lg hover:bg-blue-700">
+                                    💾 Exporter les données (JSON)
+                                </button>
+                                <button onclick="window.resetData()" 
+                                    class="bg-red-600 px-4 py-3 rounded-lg hover:bg-red-700">
+                                    🗑️ Réinitialiser toutes les données
+                                </button>
+                            </div>
+                            <div class="mt-4 p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                                <p class="text-sm text-blue-300">
+                                    💾 <strong>Sauvegarde automatique</strong> : Vos données sont sauvegardées automatiquement dans votre navigateur.
+                                </p>
+                            </div>
+                        </div>
+                    ` : ''}
+
+                    ${state.showForm ? `
+                        <div class="bg-slate-800 rounded-xl p-6 mb-6 border border-slate-700">
+                            <h3 class="text-xl font-semibold mb-4">Ajouter un trade</h3>
+                            <form id="tradeForm" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-2">Date</label>
+                                    <input type="date" name="date" value="${new Date().toISOString().split('T')[0]}" 
+                                        class="w-full bg-slate-700 rounded-lg px-4 py-2" required>
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-2">Actif</label>
+                                    <input type="text" name="actif" placeholder="EUR/USD, GBP/USD..." 
+                                        class="w-full bg-slate-700 rounded-lg px-4 py-2 uppercase" required>
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-2">Session</label>
+                                    <select name="session" class="w-full bg-slate-700 rounded-lg px-4 py-2">
+                                        <option>LONDON</option>
+                                        <option>NEW YORK</option>
+                                        <option>ASIAN</option>
+                                        <option>SYDNEY</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-2">Prix d'Entrée</label>
+                                    <input type="number" step="0.00001" name="entry" placeholder="1.08500" 
+                                        class="w-full bg-slate-700 rounded-lg px-4 py-2" required>
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-2">Lot</label>
+                                    <input type="number" step="0.01" name="lot" placeholder="0.10" 
+                                        class="w-full bg-slate-700 rounded-lg px-4 py-2" required>
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-2">Clôture</label>
+                                    <input type="number" step="0.00001" name="close" placeholder="1.08750" 
+                                        class="w-full bg-slate-700 rounded-lg px-4 py-2" required>
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-2">TP (optionnel)</label>
+                                    <input type="number" step="0.00001" name="tp" placeholder="1.09000" 
+                                        class="w-full bg-slate-700 rounded-lg px-4 py-2">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-2">SL (optionnel)</label>
+                                    <input type="number" step="0.00001" name="sl" placeholder="1.08000" 
+                                        class="w-full bg-slate-700 rounded-lg px-4 py-2">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-2">Notes</label>
+                                    <input type="text" name="notes" placeholder="Setup, émotions..." 
+                                        class="w-full bg-slate-700 rounded-lg px-4 py-2">
+                                </div>
+                                <div class="md:col-span-3">
+                                    <button type="submit" 
+                                        class="w-full bg-green-600 py-3 rounded-lg hover:bg-green-700 flex items-center justify-center gap-2 text-lg font-semibold">
+                                        💾 Enregistrer le trade
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    ` : ''}
+
+                    <div class="flex gap-2 mb-6 overflow-x-auto">
+                        <button onclick="window.setTab('dashboard')" 
+                            class="${state.tab === 'dashboard' ? 'bg-blue-600' : 'bg-slate-800'} px-6 py-3 rounded-lg whitespace-nowrap hover:opacity-90">
+                            📊 Dashboard
+                        </button>
+                        <button onclick="window.setTab('quarterly')" 
+                            class="${state.tab === 'quarterly' ? 'bg-blue-600' : 'bg-slate-800'} px-6 py-3 rounded-lg whitespace-nowrap hover:opacity-90">
+                            📅 Trimestres
+                        </button>
+                        <button onclick="window.setTab('journal')" 
+                            class="${state.tab === 'journal' ? 'bg-blue-600' : 'bg-slate-800'} px-6 py-3 rounded-lg whitespace-nowrap hover:opacity-90">
+                            📖 Journal
+                        </button>
+                    </div>
+
+                    ${m && state.tab !== 'quarterly' ? `
+                        <div class="flex gap-2 mb-6 overflow-x-auto">
+                            <span class="text-slate-400 py-2">Filtre:</span>
+                            ${m.quarterList.map(q => `
+                                <button onclick="window.setQuarter('${q}')" 
+                                    class="${state.quarter === q ? 'bg-purple-600' : 'bg-slate-800'} px-4 py-2 rounded-lg whitespace-nowrap hover:opacity-90">
+                                    ${q === 'all' ? 'Tous' : q}
+                                </button>
+                            `).join('')}
+                        </div>
+                    ` : ''}
+
+                    ${state.tab === 'dashboard' && m ? `
+                        <div class="space-y-6">
+                            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                                <div class="bg-slate-800 rounded-xl p-6 border border-slate-700">
+                                    <div class="text-slate-400 text-sm mb-2">Capital Final</div>
+                                    <div class="text-3xl font-bold text-blue-400">${m.cap.toFixed(2)}€</div>
+                                    <div class="text-sm ${m.pnlAll >= 0 ? 'text-green-400' : 'text-red-400'} mt-1">
+                                        ${m.pnlAll >= 0 ? '+' : ''}${m.pnlAll.toFixed(2)}€
+                                    </div>
+                                </div>
+                                <div class="bg-slate-800 rounded-xl p-6 border border-slate-700">
+                                    <div class="text-slate-400 text-sm mb-2">Win Rate</div>
+                                    <div class="text-3xl font-bold text-green-400">${m.winRate.toFixed(1)}%</div>
+                                    <div class="text-sm text-slate-500 mt-1">${m.wins}W / ${m.losses}L</div>
+                                </div>
+                                <div class="bg-slate-800 rounded-xl p-6 border border-slate-700">
+                                    <div class="text-slate-400 text-sm mb-2">Profit Factor</div>
+                                    <div class="text-3xl font-bold text-purple-400">${m.profitFactor.toFixed(2)}</div>
+                                    <div class="text-sm text-slate-500 mt-1">Total: ${m.total} trades</div>
+                                </div>
+                                <div class="bg-slate-800 rounded-xl p-6 border border-slate-700">
+                                    <div class="text-slate-400 text-sm mb-2">ROI</div>
+                                    <div class="text-3xl font-bold ${m.pnlAll >= 0 ? 'text-green-400' : 'text-red-400'}">
+                                        ${((m.pnlAll / state.capital) * 100).toFixed(1)}%
+                                    </div>
+                                    <div class="text-sm text-slate-500 mt-1">Performance globale</div>
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                                <div class="bg-slate-800 rounded-xl p-4 border border-slate-700">
+                                    <div class="text-slate-400 text-xs mb-1">Gain Moyen</div>
+                                    <div class="text-xl font-bold text-green-400">+${m.avgWin.toFixed(2)}€</div>
+                                </div>
+                                <div class="bg-slate-800 rounded-xl p-4 border border-slate-700">
+                                    <div class="text-slate-400 text-xs mb-1">Perte Moyenne</div>
+                                    <div class="text-xl font-bold text-red-400">-${m.avgLoss.toFixed(2)}€</div>
+                                </div>
+                                <div class="bg-slate-800 rounded-xl p-4 border border-slate-700">
+                                    <div class="text-slate-400 text-xs mb-1">Plus Grand Gain</div>
+                                    <div class="text-xl font-bold text-green-400">+${m.largestWin.toFixed(2)}€</div>
+                                </div>
+                                <div class="bg-slate-800 rounded-xl p-4 border border-slate-700">
+                                    <div class="text-slate-400 text-xs mb-1">Plus Grande Perte</div>
+                                    <div class="text-xl font-bold text-red-400">${m.largestLoss.toFixed(2)}€</div>
+                                </div>
+                            </div>
+
+                            <div class="bg-slate-800 rounded-xl p-6 border border-slate-700">
+                                <h3 class="text-xl font-semibold mb-4">📈 Évolution du Capital</h3>
+                                <canvas id="capitalChart" height="120"></canvas>
+                            </div>
+
+                            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                <div class="bg-slate-800 rounded-xl p-6 border border-slate-700">
+                                    <h3 class="text-xl font-semibold mb-4">Performance par Actif</h3>
+                                    <div class="space-y-3">
+                                        ${Object.entries(m.byActif)
+                                            .sort(([,a], [,b]) => b.pnl - a.pnl)
+                                            .map(([actif, stats]) => `
+                                                <div class="flex justify-between items-center">
+                                                    <div>
+                                                        <span class="font-mono font-semibold">${actif}</span>
+                                                        <span class="text-sm text-slate-400 ml-2">${stats.n} trades</span>
+                                                    </div>
+                                                    <span class="font-semibold ${stats.pnl >= 0 ? 'text-green-400' : 'text-red-400'}">
+                                                        ${stats.pnl >= 0 ? '+' : ''}${stats.pnl.toFixed(2)}€
+                                                    </span>
+                                                </div>
+                                            `).join('')}
+                                    </div>
+                                </div>
+
+                                <div class="bg-slate-800 rounded-xl p-6 border border-slate-700">
+                                    <h3 class="text-xl font-semibold mb-4">Performance par Session</h3>
+                                    <div class="space-y-3">
+                                        ${Object.entries(m.bySession)
+                                            .sort(([,a], [,b]) => b.pnl - a.pnl)
+                                            .map(([session, stats]) => `
+                                                <div>
+                                                    <div class="flex justify-between items-center mb-1">
+                                                        <span class="font-semibold">${session}</span>
+                                                        <span class="font-semibold ${stats.pnl >= 0 ? 'text-green-400' : 'text-red-400'}">
+                                                            ${stats.pnl >= 0 ? '+' : ''}${stats.pnl.toFixed(2)}€
+                                                        </span>
+                                                    </div>
+                                                    <div class="text-sm text-slate-400">
+                                                        ${stats.n} trades • 
+                                                        <span class="text-green-400">${stats.wins}W</span> / 
+                                                        <span class="text-red-400">${stats.losses}L</span>
+                                                    </div>
+                                                </div>
+                                            `).join('')}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    ` : ''}
+
+                    ${state.tab === 'quarterly' && m ? `
+${Object.entries(m.quarters)
+                                .sort((a, b) => b[0].localeCompare(a[0]))
+                                .map(([q, s]) => `
+                                    <div class="bg-slate-800 rounded-xl p-6 border border-slate-700">
+                                        <div class="flex justify-between items-center mb-4">
+                                            <h4 class="text-lg font-semibold">${q}</h4>
+                                            <span class="${s.pnl >= 0 ? 'text-green-400' : 'text-red-400'} text-2xl font-bold">
+                                                ${s.pnl >= 0 ? '+' : ''}${s.pnl.toFixed(2)}€
+                                            </span>
+                                        </div>
+                                        <div class="space-y-2">
+                                            <div class="flex justify-between text-sm">
+                                                <span class="text-slate-400">Trades</span>
+                                                <span class="font-semibold">${s.n}</span>
+                                            </div>
+                                            <div class="flex justify-between text-sm">
+                                                <span class="text-slate-400">Win Rate</span>
+                                                <span class="text-blue-400 font-semibold">${s.winRate.toFixed(1)}%</span>
+                                            </div>
+                                            <div class="flex justify-between text-sm">
+                                                <span class="text-slate-400">W/L</span>
+                                                <span>
+                                                    <span class="text-green-400">${s.w}</span> / 
+                                                    <span class="text-red-400">${s.l}</span>
+                                                </span>
+                                            </div>
+                                            <div class="flex justify-between text-sm">
+                                                <span class="text-slate-400">Avg Trade</span>
+                                                <span class="${s.avg >= 0 ? 'text-green-400' : 'text-red-400'} font-semibold">
+                                                    ${s.avg >= 0 ? '+' : ''}${s.avg.toFixed(2)}€
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                        </div>
+                    </div>
+                ` : ''}
+
+                ${state.tab === 'journal' ? `
+                    <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                        <div class="p-6 border-b border-slate-700">
+                            <h3 class="text-xl font-semibold">📖 Journal de Trading (${state.trades.length} trades)</h3>
+                        </div>
+                        ${state.trades.length === 0 ? `
+                            <div class="p-12 text-center text-slate-400">
+                                <p class="text-lg">Votre journal est vide</p>
+                                <p class="text-sm mt-2">Commencez à enregistrer vos trades</p>
+                            </div>
+                        ` : `
+                            <div class="overflow-x-auto">
+                                <table class="w-full">
+                                    <thead class="bg-slate-700/50">
+                                        <tr>
+                                            <th class="px-4 py-3 text-left text-xs font-medium text-slate-400">Date</th>
+                                            <th class="px-4 py-3 text-left text-xs font-medium text-slate-400">Actif</th>
+                                            <th class="px-4 py-3 text-left text-xs font-medium text-slate-400">Session</th>
+                                            <th class="px-4 py-3 text-right text-xs font-medium text-slate-400">Entrée</th>
+                                            <th class="px-4 py-3 text-right text-xs font-medium text-slate-400">Lot</th>
+                                            <th class="px-4 py-3 text-right text-xs font-medium text-slate-400">TP</th>
+                                            <th class="px-4 py-3 text-right text-xs font-medium text-slate-400">SL</th>
+                                            <th class="px-4 py-3 text-right text-xs font-medium text-slate-400">Clôture</th>
+                                            <th class="px-4 py-3 text-right text-xs font-medium text-slate-400">Pips</th>
+                                            <th class="px-4 py-3 text-right text-xs font-medium text-slate-400">Résultat</th>
+                                            <th class="px-4 py-3 text-center text-xs font-medium text-slate-400">Action</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-slate-700">
+                                        ${state.trades.map(t => `
+                                            <tr class="hover:bg-slate-700/30">
+                                                <td class="px-4 py-3 text-sm whitespace-nowrap">
+                                                    ${new Date(t.date).toLocaleDateString('fr-FR')}
+                                                </td>
+                                                <td class="px-4 py-3 text-sm font-semibold whitespace-nowrap">${t.actif}</td>
+                                                <td class="px-4 py-3 text-sm whitespace-nowrap">
+                                                    <span class="px-2 py-1 bg-blue-500/20 text-blue-400 rounded text-xs">
+                                                        ${t.session}
+                                                    </span>
+                                                </td>
+                                                <td class="px-4 py-3 text-sm text-right whitespace-nowrap">${t.prixEntree.toFixed(5)}</td>
+                                                <td class="px-4 py-3 text-sm text-right whitespace-nowrap">${t.lot}</td>
+                                                <td class="px-4 py-3 text-sm text-right text-green-400 whitespace-nowrap">
+                                                    ${t.tp ? t.tp.toFixed(5) : '-'}
+                                                </td>
+                                                <td class="px-4 py-3 text-sm text-right text-red-400 whitespace-nowrap">
+                                                    ${t.sl ? t.sl.toFixed(5) : '-'}
+                                                </td>
+                                                <td class="px-4 py-3 text-sm text-right whitespace-nowrap">${t.cloture.toFixed(5)}</td>
+                                                <td class="px-4 py-3 text-sm text-right font-semibold whitespace-nowrap ${parseFloat(t.pips) >= 0 ? 'text-green-400' : 'text-red-400'}">
+                                                    ${parseFloat(t.pips) >= 0 ? '+' : ''}${t.pips}
+                                                </td>
+                                                <td class="px-4 py-3 text-sm text-right font-bold whitespace-nowrap ${t.resultat >= 0 ? 'text-green-400' : 'text-red-400'}">
+                                                    ${t.resultat >= 0 ? '+' : ''}${t.resultat.toFixed(2)}€
+                                                </td>
+                                                <td class="px-4 py-3 text-center whitespace-nowrap">
+                                                    <button onclick="window.deleteTrade(${t.id})" 
+                                                        class="text-red-400 hover:text-red-300 text-lg">✖</button>
+                                                </td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        `}
+                    </div>
+                ` : ''}
+
+                ${!m && state.tab === 'dashboard' ? `
+                    <div class="bg-slate-800 rounded-xl p-12 border border-slate-700 text-center">
+                        <div class="text-6xl mb-4">📊</div>
+                        <p class="text-slate-400 text-lg">Aucune donnée disponible</p>
+                        <p class="text-slate-500 mt-2">Ajoutez vos premiers trades pour voir les graphiques</p>
+                    </div>
+                ` : ''}
+            </div>
+        `;
+
+        const form = document.getElementById('tradeForm');
+        if (form) {
+            form.onsubmit = (e) => {
+                e.preventDefault();
+                addTrade(Object.fromEntries(new FormData(e.target)));
+            };
+        }
+
+        if (m && state.tab === 'dashboard') {
+            setTimeout(() => {
+                const ctx = document.getElementById('capitalChart');
+                if (ctx) {
+                    new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: m.evolution.map(d => d.date),
+                            datasets: [{
+                                label: 'Capital (€)',
+                                data: m.evolution.map(d => d.capital),
+                                borderColor: 'rgb(59, 130, 246)',
+                                backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                                fill: true,
+                                tension: 0.4,
+                                pointRadius: 3,
+                                pointHoverRadius: 6
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { display: false },
+                                tooltip: {
+                                    backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                                    titleColor: '#94a3b8',
+                                    bodyColor: '#fff',
+                                    borderColor: '#334155',
+                                    borderWidth: 1,
+                                    padding: 12,
+                                    displayColors: false
+                                }
+                            },
+                            scales: {
+                                y: { 
+                                    ticks: { color: '#94a3b8' },
+                                    grid: { color: '#334155' }
+                                },
+                                x: { 
+                                    ticks: { color: '#94a3b8', maxRotation: 45 },
+                                    grid: { color: '#334155' }
+                                }
+                            }
+                        }
+                    });
+                }
+            }, 100);
+        }
+    }
+
+    window.toggleForm = () => {
+        state.showForm = !state.showForm;
+        render();
+    };
+
+    window.toggleSettings = () => {
+        state.showSettings = !state.showSettings;
+        render();
+    };
+
+    window.setTab = (tab) => {
+        state.tab = tab;
+        render();
+    };
+
+    window.setQuarter = (quarter) => {
+        state.quarter = quarter;
+        render();
+    };
+
+    window.updateCapital = (value) => {
+        state.capital = parseFloat(value) || 10000;
+        storage.save('capital', state.capital);
+        render();
+    };
+
+    window.deleteTrade = deleteTrade;
+    window.exportReport = exportReport;
+    window.exportJSON = exportJSON;
+    window.importJSON = importJSON;
+    window.resetData = resetData;
+
+    render();
+</script>
+  </body>
+</html>
